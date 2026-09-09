@@ -1,167 +1,94 @@
 <?php
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
-require_role('admin');
+require_role(['teacher', 'staff']);
 
-$pageTitle = 'Admin Dashboard';
+$pageTitle = 'Teacher Dashboard';
+$userId = current_user()['user_id'];
 
-$totalPupils   = $pdo->query("SELECT COUNT(*) FROM pupils")->fetchColumn();
-$totalStaff    = $pdo->query("SELECT COUNT(*) FROM staff")->fetchColumn();
-$totalClasses  = $pdo->query("SELECT COUNT(*) FROM classes")->fetchColumn();
+$staffRow = $pdo->prepare('SELECT staff_id FROM staff WHERE user_id = ?');
+$staffRow->execute([$userId]);
+$staffId = $staffRow->fetchColumn();
 
-$today = date('Y-m-d');
-
-$pupilsPresentToday = $pdo->prepare(
-    "SELECT COUNT(*) FROM student_attendance WHERE attendance_date = ? AND status = 'present'"
-);
-$pupilsPresentToday->execute([$today]);
-$pupilsPresentToday = (int) $pupilsPresentToday->fetchColumn();
-
-$pupilsMarkedToday = $pdo->prepare(
-    "SELECT COUNT(*) FROM student_attendance WHERE attendance_date = ?"
-);
-$pupilsMarkedToday->execute([$today]);
-$pupilsMarkedToday = (int) $pupilsMarkedToday->fetchColumn();
-
-$studentAttendanceRate = $pupilsMarkedToday > 0
-    ? round(($pupilsPresentToday / $pupilsMarkedToday) * 100, 1)
-    : null;
-
-$staffPresentToday = $pdo->prepare(
-    "SELECT COUNT(*) FROM staff_attendance WHERE attendance_date = ? AND status = 'present'"
-);
-$staffPresentToday->execute([$today]);
-$staffPresentToday = (int) $staffPresentToday->fetchColumn();
-
-$staffMarkedToday = $pdo->prepare(
-    "SELECT COUNT(*) FROM staff_attendance WHERE attendance_date = ?"
-);
-$staffMarkedToday->execute([$today]);
-$staffMarkedToday = (int) $staffMarkedToday->fetchColumn();
-
-$avgPerformance = $pdo->query(
-    "SELECT ROUND(AVG(total_score),1) FROM academic_records WHERE academic_year = " .
-    $pdo->quote(current_academic_year())
-)->fetchColumn();
-
-// Attendance trend, last 7 days
-$trend = $pdo->query("
-    SELECT attendance_date,
-           SUM(status='present') AS present_count,
-           COUNT(*) AS total_count
-    FROM student_attendance
-    WHERE attendance_date >= CURDATE() - INTERVAL 6 DAY
-    GROUP BY attendance_date
-    ORDER BY attendance_date
-")->fetchAll();
-
-// Classes needing attendance marked today
-$classesPendingToday = $pdo->prepare("
-    SELECT c.class_id, c.class_name
-    FROM classes c
-    WHERE c.class_id NOT IN (
-        SELECT DISTINCT class_id FROM student_attendance WHERE attendance_date = ?
-    )
+$mySubjects = $pdo->prepare("
+    SELECT s.subject_id, s.subject_name, c.class_id, c.class_name,
+           (SELECT COUNT(*) FROM pupils p WHERE p.class_id = c.class_id) AS pupil_count
+    FROM subjects s
+    JOIN classes c ON c.class_id = s.class_id
+    WHERE s.teacher_id = ?
+    ORDER BY c.class_name, s.subject_name
 ");
-$classesPendingToday->execute([$today]);
-$classesPendingToday = $classesPendingToday->fetchAll();
+$mySubjects->execute([$userId]);
+$mySubjects = $mySubjects->fetchAll();
 
-// Recent activity
-$recentActivity = $pdo->query("
-    SELECT al.action, al.created_at, u.full_name, u.role
-    FROM activity_log al
-    LEFT JOIN users u ON u.user_id = al.user_id
-    ORDER BY al.created_at DESC
-    LIMIT 8
-")->fetchAll();
+$myResponsibilities = [];
+if ($staffId) {
+    $stmt = $pdo->prepare("SELECT * FROM responsibilities WHERE staff_id = ? AND status = 'active' ORDER BY date_assigned DESC");
+    $stmt->execute([$staffId]);
+    $myResponsibilities = $stmt->fetchAll();
+}
+
+$classIds = array_column($mySubjects, 'class_id');
+$attendanceTodayCount = 0;
+if ($classIds) {
+    $in = implode(',', array_fill(0, count($classIds), '?'));
+    $stmt = $pdo->prepare("SELECT COUNT(DISTINCT class_id) FROM student_attendance WHERE attendance_date = CURDATE() AND class_id IN ($in)");
+    $stmt->execute($classIds);
+    $attendanceTodayCount = (int) $stmt->fetchColumn();
+}
 
 require __DIR__ . '/../includes/header.php';
 ?>
 
-<div class="section-title">
-    <h1 style="margin:0;">Admin Dashboard</h1>
-    <span class="pill"><?= h(current_academic_year()) ?></span>
-</div>
-<p class="muted">Overview of Albert Academy's monitoring data for today, <?= date('l, j F Y') ?>.</p>
+<h1>Welcome, <?= h(current_user()['full_name']) ?></h1>
+<p class="muted">Here's an overview of your classes and responsibilities.</p>
 
 <div class="grid grid-3">
     <div class="stat">
-        <div class="stat-value"><?= (int) $totalPupils ?></div>
-        <div class="stat-label">Total Pupils</div>
+        <div class="stat-value"><?= count($mySubjects) ?></div>
+        <div class="stat-label">Subjects Assigned</div>
     </div>
     <div class="stat">
-        <div class="stat-value"><?= (int) $totalStaff ?></div>
-        <div class="stat-label">Teachers &amp; Staff</div>
+        <div class="stat-value"><?= count(array_unique($classIds)) ?></div>
+        <div class="stat-label">Classes Taught</div>
     </div>
     <div class="stat">
-        <div class="stat-value"><?= (int) $totalClasses ?></div>
-        <div class="stat-label">Classes</div>
-    </div>
-</div>
-
-<div class="grid grid-3" style="margin-top:4px;">
-    <div class="stat">
-        <div class="stat-value"><?= $studentAttendanceRate !== null ? $studentAttendanceRate . '%' : '—' ?></div>
-        <div class="stat-label">Pupil Attendance Today (<?= $pupilsMarkedToday ?> marked)</div>
-    </div>
-    <div class="stat">
-        <div class="stat-value"><?= $staffMarkedToday > 0 ? round(($staffPresentToday / $staffMarkedToday) * 100, 1) . '%' : '—' ?></div>
-        <div class="stat-label">Staff Attendance Today (<?= $staffMarkedToday ?> marked)</div>
-    </div>
-    <div class="stat">
-        <div class="stat-value"><?= $avgPerformance !== null ? $avgPerformance : '—' ?></div>
-        <div class="stat-label">Avg. Academic Score (this year)</div>
-    </div>
-</div>
-
-<div class="grid grid-2" style="margin-top:6px;">
-    <div class="card">
-        <h3>Pupil Attendance — Last 7 Days</h3>
-        <?php if (!$trend): ?>
-            <p class="muted">No attendance data recorded yet.</p>
-        <?php else: ?>
-            <table>
-                <tr><th>Date</th><th>Present</th><th>Marked</th><th>Rate</th></tr>
-                <?php foreach ($trend as $row): $rate = $row['total_count'] > 0 ? round(($row['present_count'] / $row['total_count']) * 100, 1) : 0; ?>
-                <tr>
-                    <td><?= h($row['attendance_date']) ?></td>
-                    <td><?= (int) $row['present_count'] ?></td>
-                    <td><?= (int) $row['total_count'] ?></td>
-                    <td><?= $rate ?>%</td>
-                </tr>
-                <?php endforeach; ?>
-            </table>
-        <?php endif; ?>
-    </div>
-
-    <div class="card">
-        <h3>Classes Not Yet Marked Today</h3>
-        <?php if (!$classesPendingToday): ?>
-            <p class="muted">All classes have attendance recorded for today.</p>
-        <?php else: ?>
-            <table>
-                <tr><th>Class</th></tr>
-                <?php foreach ($classesPendingToday as $c): ?>
-                <tr><td><?= h($c['class_name']) ?></td></tr>
-                <?php endforeach; ?>
-            </table>
-        <?php endif; ?>
+        <div class="stat-value"><?= count($myResponsibilities) ?></div>
+        <div class="stat-label">Active Responsibilities</div>
     </div>
 </div>
 
 <div class="card">
-    <h3>Recent Activity</h3>
-    <?php if (!$recentActivity): ?>
-        <p class="muted">No activity logged yet.</p>
+    <h3>My Subjects &amp; Classes</h3>
+    <?php if (!$mySubjects): ?>
+        <p class="muted">No subjects have been assigned to you yet. Contact the administrator.</p>
     <?php else: ?>
         <table>
-            <tr><th>When</th><th>User</th><th>Role</th><th>Action</th></tr>
-            <?php foreach ($recentActivity as $a): ?>
+            <tr><th>Subject</th><th>Class</th><th>Pupils</th><th></th></tr>
+            <?php foreach ($mySubjects as $s): ?>
             <tr>
-                <td><?= h($a['created_at']) ?></td>
-                <td><?= h($a['full_name'] ?? 'System') ?></td>
-                <td><?= h($a['role'] ?? '—') ?></td>
-                <td><?= h($a['action']) ?></td>
+                <td><?= h($s['subject_name']) ?></td>
+                <td><?= h($s['class_name']) ?></td>
+                <td><?= (int) $s['pupil_count'] ?></td>
+                <td><a class="btn btn-sm btn-outline" href="/teacher/mark_attendance.php?class_id=<?= (int)$s['class_id'] ?>">Mark Attendance</a></td>
+            </tr>
+            <?php endforeach; ?>
+        </table>
+    <?php endif; ?>
+</div>
+
+<div class="card">
+    <h3>My Active Responsibilities</h3>
+    <?php if (!$myResponsibilities): ?>
+        <p class="muted">No responsibilities currently assigned to you.</p>
+    <?php else: ?>
+        <table>
+            <tr><th>Title</th><th>Assigned</th><th>Due</th></tr>
+            <?php foreach ($myResponsibilities as $r): ?>
+            <tr>
+                <td><?= h($r['title']) ?></td>
+                <td><?= h($r['date_assigned']) ?></td>
+                <td><?= h($r['due_date'] ?? '—') ?></td>
             </tr>
             <?php endforeach; ?>
         </table>
