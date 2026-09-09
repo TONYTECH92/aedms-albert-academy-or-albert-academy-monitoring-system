@@ -1,7 +1,6 @@
 # Integrated Digital Education Monitoring System (AEDMS)
 ### Case Study: Albert Academy, Freetown, Sierra Leone
-Dissertation project — IPAM, University of Sierra Leone
-
+Dissertation project — IMATT Colllege 
 ## 1. What this system does
 
 A role-based web application with three actor types, matching your dissertation scope:
